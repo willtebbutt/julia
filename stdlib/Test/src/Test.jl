@@ -1678,34 +1678,36 @@ function testset_beginend_call(args, tests, source)
         else
             $(testsettype)($desc; $options...)
         end
-        @with_testset ts begin
-            # we reproduce the logic of guardseed, but this function
-            # cannot be used as it changes slightly the semantic of @testset,
-            # by wrapping the body in a function
-            local default_rng_orig = copy(default_rng())
-            local tls_seed_orig = copy(Random.get_tls_seed())
-            try
+
+        # we reproduce the logic of guardseed, but this function
+        # cannot be used as it changes slightly the semantic of @testset,
+        # by wrapping the body in a function
+        local default_rng_orig = copy(default_rng())
+        local tls_seed_orig = copy(Random.get_tls_seed())
+        try
+            @with_testset ts begin
                 # default RNG is reset to its state from last `seed!()` to ease reproduce a failed test
                 copy!(Random.default_rng(), tls_seed_orig)
                 let
                     $(esc(tests))
                 end
-            catch err
-                err isa InterruptException && rethrow()
-                # something in the test block threw an error. Count that as an
-                # error in this test set
-                trigger_test_failure_break(err)
-                if err isa FailFastError
-                    get_testset_depth() > 1 ? rethrow() : failfast_print()
-                else
-                    record(ts, Error(:nontest_error, Expr(:tuple), err, Base.current_exceptions(), $(QuoteNode(source))))
-                end
-            finally
-                copy!(default_rng(), default_rng_orig)
-                copy!(Random.get_tls_seed(), tls_seed_orig)
             end
+        catch err
+            err isa InterruptException && rethrow()
+            # something in the test block threw an error. Count that as an
+            # error in this test set
+            trigger_test_failure_break(err)
+            if err isa FailFastError
+                get_testset_depth() > 1 ? rethrow() : failfast_print()
+            else
+                record(ts, Error(:nontest_error, Expr(:tuple), err, Base.current_exceptions(), $(QuoteNode(source))))
+            end
+        finally
+            copy!(default_rng(), default_rng_orig)
+            copy!(Random.get_tls_seed(), tls_seed_orig)
+            ret = finish(ts)
         end
-        ts
+        ret
     end
     # preserve outer location if possible
     if tests isa Expr && tests.head === :block && !isempty(tests.args) && tests.args[1] isa LineNumberNode
@@ -1766,24 +1768,24 @@ function testset_forloop(args, testloop, source)
         else
             $(testsettype)($desc; $options...)
         end
-        @with_testset ts begin
-            try
+        try
+            @with_testset ts begin
                 # default RNG is reset to its state from last `seed!()` to ease reproduce a failed test
                 copy!(Random.default_rng(), tls_seed_orig)
                 $(esc(tests))
-            catch err
-                err isa InterruptException && rethrow()
-                # Something in the test block threw an error. Count that as an
-                # error in this test set
-                trigger_test_failure_break(err)
-                if !isa(err, FailFastError)
-                    record(ts, Error(:nontest_error, Expr(:tuple), err, Base.current_exceptions(), $(QuoteNode(source))))
-                end
-            finally
-                copy!(default_rng(), default_rng_orig)
-                copy!(Random.get_tls_seed(), tls_seed_orig)
-                push!(arr, ts)
             end
+        catch err
+            err isa InterruptException && rethrow()
+            # Something in the test block threw an error. Count that as an
+            # error in this test set
+            trigger_test_failure_break(err)
+            if !isa(err, FailFastError)
+                record(ts, Error(:nontest_error, Expr(:tuple), err, Base.current_exceptions(), $(QuoteNode(source))))
+            end
+        finally
+            copy!(default_rng(), default_rng_orig)
+            copy!(Random.get_tls_seed(), tls_seed_orig)
+            push!(arr, finish(ts))
         end
     end
     quote
@@ -1845,13 +1847,7 @@ const CURRENT_TESTSET = ScopedValue{AbstractTestSet}(FallbackTestSet())
 const TESTSET_DEPTH = ScopedValue{Int}(0)
 
 macro with_testset(ts, expr)
-    quote
-        ts = $(esc(ts))
-        $(Expr(:tryfinally,
-            :(@with(CURRENT_TESTSET => ts, TESTSET_DEPTH => get_testset_depth() + 1, $(esc(expr)))),
-            :(finish(ts))
-        ))
-    end
+    :(@with(CURRENT_TESTSET => $(esc(ts)), TESTSET_DEPTH => get_testset_depth() + 1, $(esc(expr))))
 end
 
 """
