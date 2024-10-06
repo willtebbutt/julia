@@ -1582,8 +1582,8 @@ julia> @testset let logi = log(im), op = !iszero
        end
 Test Failed at none:3
   Expression: op(real(logi))
-     Context: logi = 0.0 + 1.5707963267948966im
-              op = !iszero
+     Context: op = !iszero
+              logi = 0.0 + 1.5707963267948966im
 
 ERROR: There was an error during testing
 ```
