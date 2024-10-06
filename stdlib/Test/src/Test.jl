@@ -1582,8 +1582,8 @@ julia> @testset let logi = log(im), op = !iszero
        end
 Test Failed at none:3
   Expression: op(real(logi))
-     Context: op = !iszero
-              logi = 0.0 + 1.5707963267948966im
+     Context: logi = 0.0 + 1.5707963267948966im
+              op = !iszero
 
 ERROR: There was an error during testing
 ```
@@ -1641,7 +1641,7 @@ function testset_context(args, ex, source)
         error("Malformed `let` expression is given")
     end
     test_ex = ex.args[2]
-    for context in reverse(contexts)
+    for context in contexts
         test_ex = :($Test.@with_testset($ContextTestSet($(QuoteNode(context)), $context; $options...), $test_ex))
     end
     ex.args[2] = test_ex
