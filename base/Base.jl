@@ -377,6 +377,9 @@ function __init__()
     if haskey(ENV, "JULIA_MAX_NUM_PRECOMPILE_FILES")
         MAX_NUM_PRECOMPILE_FILES[] = parse(Int, ENV["JULIA_MAX_NUM_PRECOMPILE_FILES"])
     end
+    if haskey(ENV, "JULIA_DISABLE_PARALLEL_PRECOMPILE")
+        disable_parallel_precompile = parse(Bool, ENV["JULIA_DISABLE_PARALLEL_PRECOMPILE"])
+    end
     # Profiling helper
     @static if !Sys.iswindows()
         # triggering a profile via signals is not implemented on windows
