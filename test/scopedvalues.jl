@@ -3,7 +3,7 @@
 using Base.ScopedValues
 using Test
 
-include("compiler/irutils.jl")
+include(joinpath(@__DIR__,"../Compiler/test/irutils.jl"))
 
 @testset "errors" begin
     @test ScopedValue{Float64}(1)[] == 1.0
@@ -175,4 +175,24 @@ end
 const inlineable_const_sv = ScopedValue(1)
 @test fully_eliminated(; retval=(inlineable_const_sv => 1)) do
     inlineable_const_sv => 1
+end
+
+# Handle nothrow scope bodies correctly (#56609)
+@eval function nothrow_scope()
+    $(Expr(:tryfinally, :(), nothing, 1))
+    @test Core.current_scope() === nothing
+end
+nothrow_scope()
+
+# https://github.com/JuliaLang/julia/issues/56062
+@testset "issue #56062" begin
+    ts = Int[]
+    try
+        @with begin
+            return
+        end
+    catch err
+    finally
+        push!(ts, 2)
+    end
 end

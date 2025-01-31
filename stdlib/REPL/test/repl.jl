@@ -752,11 +752,11 @@ fake_repl() do stdin_write, stdout_read, repl
 
     # Test removal of prefix in single statement paste
     sendrepl2("\e[200~julia> A = 2\e[201~\n")
-    @test Main.A == 2
+    @test @world(Main.A, ∞) == 2
 
     # Test removal of prefix in single statement paste
     sendrepl2("\e[200~In [12]: A = 2.2\e[201~\n")
-    @test Main.A == 2.2
+    @test @world(Main.A, ∞) == 2.2
 
     # Test removal of prefix in multiple statement paste
     sendrepl2("""\e[200~
@@ -768,10 +768,10 @@ fake_repl() do stdin_write, stdout_read, repl
 
                     julia> A = 3\e[201~
              """)
-    @test Main.A == 3
-    @test Base.invokelatest(Main.foo, 4)
-    @test Base.invokelatest(Main.T17599, 3).a == 3
-    @test !Base.invokelatest(Main.foo, 2)
+    @test @world(Main.A, ∞) == 3
+    @test @invokelatest(Main.foo(4))
+    @test @invokelatest(Main.T17599(3)).a == 3
+    @test !@invokelatest(Main.foo(2))
 
     sendrepl2("""\e[200~
             julia> goo(x) = x + 1
@@ -780,12 +780,12 @@ fake_repl() do stdin_write, stdout_read, repl
             julia> A = 4
             4\e[201~
              """)
-    @test Main.A == 4
-    @test Base.invokelatest(Main.goo, 4) == 5
+    @test @world(Main.A, ∞) == 4
+    @test @invokelatest(Main.goo(4)) == 5
 
     # Test prefix removal only active in bracket paste mode
     sendrepl2("julia = 4\n julia> 3 && (A = 1)\n")
-    @test Main.A == 1
+    @test @world(Main.A, ∞) == 1
 
     # Test that indentation corresponding to the prompt is removed
     s = sendrepl2("""\e[200~julia> begin\n           α=1\n           β=2\n       end\n\e[201~""")
@@ -820,8 +820,8 @@ fake_repl() do stdin_write, stdout_read, repl
             julia> B = 2
             2\e[201~
              """)
-    @test Main.A == 1
-    @test Main.B == 2
+    @test @world(Main.A, ∞) == 1
+    @test @world(Main.B, ∞) == 2
     end # redirect_stdout
 
     # Close repl
@@ -1962,6 +1962,46 @@ end
     undoc = Docs.undocumented_names(REPL)
     @test_broken isempty(undoc)
     @test undoc == [:AbstractREPL, :BasicREPL, :LineEditREPL, :StreamREPL]
+end
+
+struct A40735
+    str::String
+end
+
+# https://github.com/JuliaLang/julia/issues/40735
+@testset "Long printing" begin
+    previous = REPL.SHOW_MAXIMUM_BYTES
+    try
+        REPL.SHOW_MAXIMUM_BYTES = 1000
+        str = string(('a':'z')...)^50
+        @test length(str) > 1100
+        # For a raw string, we correctly get the standard abbreviated output
+        output = sprint(REPL.show_limited, MIME"text/plain"(), str; context=:limit => true)
+        hint = """call `show(stdout, MIME"text/plain"(), ans)` to print without truncation"""
+        suffix = "[printing stopped after displaying 1000 bytes; $hint]"
+        @test !endswith(output, suffix)
+        @test contains(output, "bytes ⋯")
+        # For a struct without a custom `show` method, we don't hit the abbreviated
+        # 3-arg show on the inner string, so here we check that the REPL print-limiting
+        # feature is correctly kicking in.
+        a = A40735(str)
+        output = sprint(REPL.show_limited, MIME"text/plain"(), a; context=:limit => true)
+        @test endswith(output, suffix)
+        @test length(output) <= 1200
+        # We also check some extreme cases
+        REPL.SHOW_MAXIMUM_BYTES = 1
+        output = sprint(REPL.show_limited, MIME"text/plain"(), 1)
+        @test output == "1"
+        output = sprint(REPL.show_limited, MIME"text/plain"(), 12)
+        @test output == "1…[printing stopped after displaying 1 byte; $hint]"
+        REPL.SHOW_MAXIMUM_BYTES = 0
+        output = sprint(REPL.show_limited, MIME"text/plain"(), 1)
+        @test output == "…[printing stopped after displaying 0 bytes; $hint]"
+        @test sprint(io -> show(REPL.LimitIO(io, 5), "abc")) == "\"abc\""
+        @test_throws REPL.LimitIOException(1) sprint(io -> show(REPL.LimitIO(io, 1), "abc"))
+    finally
+        REPL.SHOW_MAXIMUM_BYTES = previous
+    end
 end
 
 @testset "Dummy Pkg prompt" begin

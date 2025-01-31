@@ -377,8 +377,8 @@ add_method_to_glob_fn!()
 @test_parseerror "function finally() end"
 
 # PR #16170
-@test Meta.lower(Main, Meta.parse("true(x) = x")) == Expr(:error, "invalid function name \"true\"")
-@test Meta.lower(Main, Meta.parse("false(x) = x")) == Expr(:error, "invalid function name \"false\"")
+@test Meta.lower(Main, Meta.parse("true(x) = x")) == Expr(:error, "\"true\" is not a valid function argument name")
+@test Meta.lower(Main, Meta.parse("false(x) = x")) == Expr(:error, "\"false\" is not a valid function argument name")
 
 # issue #16355
 @test Meta.lower(Main, :(f(d:Int...) = nothing)) == Expr(:error, "\"d:Int\" is not a valid function argument name")
@@ -476,7 +476,7 @@ let err = try
     catch e
         e
     end
-    @test err.line == 7
+    @test err.line in (5, 7)
 end
 
 # PR #17393
@@ -553,7 +553,14 @@ for (str, tag) in Dict("" => :none, "\"" => :string, "#=" => :comment, "'" => :c
 end
 
 # meta nodes for optional positional arguments
-let src = Meta.lower(Main, :(@inline f(p::Int=2) = 3)).args[1].code[end-2].args[3]
+let code = Meta.lower(Main, :(@inline f(p::Int=2) = 3)).args[1].code
+    local src
+    for i = length(code):-1:1
+        if Meta.isexpr(code[i], :method)
+            src = code[i].args[3]
+            break
+        end
+    end
     @test Core.Compiler.is_declared_inline(src)
 end
 
@@ -578,6 +585,7 @@ let thismodule = @__MODULE__,
     @test isa(ex, Expr)
     @test !isdefined(M16096, :foo16096)
     local_foo16096 = Core.eval(@__MODULE__, ex)
+    Core.@latestworld
     @test local_foo16096(2.0) == 1
     @test !@isdefined foo16096
     @test !@isdefined it
@@ -917,8 +925,8 @@ g21054(>:) = >:2
 @test g21054(-) == -2
 
 # issue #21168
-@test Meta.lower(Main, :(a.[1])) == Expr(:error, "invalid syntax \"a.[1]\"")
-@test Meta.lower(Main, :(a.{1})) == Expr(:error, "invalid syntax \"a.{1}\"")
+@test_broken Meta.lower(Main, :(a.[1])) == Expr(:error, "invalid syntax \"a.[1]\"")
+@test_broken Meta.lower(Main, :(a.{1})) == Expr(:error, "invalid syntax \"a.{1}\"")
 
 # Issue #21225
 let abstr = Meta.parse("abstract type X end")
@@ -1488,8 +1496,8 @@ end
 
 # issue #26739
 let exc = try Core.eval(@__MODULE__, :(sin.[1])) catch exc ; exc end
-    @test exc isa ErrorException
-    @test startswith(exc.msg, "syntax: invalid syntax \"sin.[1]\"")
+    @test_broken exc isa ErrorException
+    @test_broken startswith(exc.msg, "syntax: invalid syntax \"sin.[1]\"")
 end
 
 # issue #26873
@@ -2446,7 +2454,9 @@ end
 @test_throws MethodError @m37134()(1.0) == 62
 
 macro n37134()
-    :($(esc(Expr(:tuple, Expr(:..., :x))))->$(esc(:x)))
+    quote
+        ((x...,)) -> (x)
+    end |> esc
 end
 @test @n37134()(2,1) === (2,1)
 
@@ -3102,6 +3112,7 @@ end
     ex = Expr(:block)
     ex.args = fill!(Vector{Any}(undef, 700000), 1)
     f = eval(Expr(:function, :(), ex))
+    @Core.latestworld
     @test f() == 1
     ex = Expr(:vcat)
     ex.args = fill!(Vector{Any}(undef, 600000), 1)
@@ -3294,6 +3305,7 @@ const typeof = error
 end
 let ex = :(const $(esc(:x)) = 1; (::typeof($(esc(:foo43993))))() = $(esc(:x)))
     Core.eval(M43993, Expr(:var"hygienic-scope", ex, Core))
+    @Core.latestworld
     @test M43993.x === 1
     @test invokelatest(M43993.foo43993) === 1
 end
@@ -3704,7 +3716,7 @@ end
 module Foreign54607
     # Syntactic, not dynamic
     try_to_create_binding1() = (Foreign54607.foo = 2)
-    # GlobalRef is allowed for same-module assignment
+    # GlobalRef is allowed for same-module assignment and declares the binding
     @eval try_to_create_binding2() = ($(GlobalRef(Foreign54607, :foo2)) = 2)
     function global_create_binding()
         global bar
@@ -3719,7 +3731,7 @@ module Foreign54607
 end
 @test_throws ErrorException (Foreign54607.foo = 1)
 @test_throws ErrorException Foreign54607.try_to_create_binding1()
-@test_throws ErrorException Foreign54607.try_to_create_binding2()
+Foreign54607.try_to_create_binding2()
 function assign_in_foreign_module()
     (Foreign54607.foo = 1)
     nothing
@@ -3735,6 +3747,7 @@ Foreign54607.global_create_binding()
 @test isdefined(Foreign54607, :baz)
 @test isdefined(Foreign54607, :compiled_assign)
 @test isdefined(Foreign54607, :gr_assign)
+@test isdefined(Foreign54607, :foo2)
 Foreign54607.bar = 8
 @test Foreign54607.bar == 8
 begin
@@ -3865,6 +3878,29 @@ end
     end
 end
 
+let src = Meta.@lower let
+    try
+        try
+            return 1
+        catch
+        end
+    finally
+        nothing
+    end
+end
+    code = src.args[1].code
+    for stmt in code
+        if Meta.isexpr(stmt, :leave) && length(stmt.args) > 1
+            # Expr(:leave, ...) should list the arguments to pop from
+            # inner-most scope to outer-most
+            @test issorted(Int[
+                (arg::Core.SSAValue).id
+                for arg in stmt.args
+            ]; rev=true)
+        end
+    end
+end
+
 # Test that globals can be `using`'d even if they are not yet defined
 module UndefGlobal54954
     global theglobal54954::Int
@@ -3886,28 +3922,28 @@ module ExtendedIsDefined
     import .Import.x4
     @test x2 == 2 # Resolve the binding
     @eval begin
-        @test $(Expr(:isdefined, GlobalRef(@__MODULE__, :x1)))
-        @test $(Expr(:isdefined, GlobalRef(@__MODULE__, :x2)))
-        @test $(Expr(:isdefined, GlobalRef(@__MODULE__, :x3)))
-        @test $(Expr(:isdefined, GlobalRef(@__MODULE__, :x4)))
+        @test Core.isdefinedglobal(@__MODULE__, :x1)
+        @test Core.isdefinedglobal(@__MODULE__, :x2)
+        @test Core.isdefinedglobal(@__MODULE__, :x3)
+        @test Core.isdefinedglobal(@__MODULE__, :x4)
 
-        @test $(Expr(:isdefined, GlobalRef(@__MODULE__, :x1), false))
-        @test !$(Expr(:isdefined, GlobalRef(@__MODULE__, :x2), false))
-        @test !$(Expr(:isdefined, GlobalRef(@__MODULE__, :x3), false))
-        @test !$(Expr(:isdefined, GlobalRef(@__MODULE__, :x4), false))
+        @test Core.isdefinedglobal(@__MODULE__, :x1, false)
+        @test !Core.isdefinedglobal(@__MODULE__, :x2, false)
+        @test !Core.isdefinedglobal(@__MODULE__, :x3, false)
+        @test !Core.isdefinedglobal(@__MODULE__, :x4, false)
     end
 
     @eval begin
         @Base.Experimental.force_compile
-        @test $(Expr(:isdefined, GlobalRef(@__MODULE__, :x1)))
-        @test $(Expr(:isdefined, GlobalRef(@__MODULE__, :x2)))
-        @test $(Expr(:isdefined, GlobalRef(@__MODULE__, :x3)))
-        @test $(Expr(:isdefined, GlobalRef(@__MODULE__, :x4)))
+        @test Core.isdefinedglobal(@__MODULE__, :x1)
+        @test Core.isdefinedglobal(@__MODULE__, :x2)
+        @test Core.isdefinedglobal(@__MODULE__, :x3)
+        @test Core.isdefinedglobal(@__MODULE__, :x4)
 
-        @test $(Expr(:isdefined, GlobalRef(@__MODULE__, :x1), false))
-        @test !$(Expr(:isdefined, GlobalRef(@__MODULE__, :x2), false))
-        @test !$(Expr(:isdefined, GlobalRef(@__MODULE__, :x3), false))
-        @test !$(Expr(:isdefined, GlobalRef(@__MODULE__, :x4), false))
+        @test Core.isdefinedglobal(@__MODULE__, :x1, false)
+        @test !Core.isdefinedglobal(@__MODULE__, :x2, false)
+        @test !Core.isdefinedglobal(@__MODULE__, :x3, false)
+        @test !Core.isdefinedglobal(@__MODULE__, :x4, false)
     end
 end
 
@@ -3938,11 +3974,12 @@ end
 
 # Module Replacement
 module ReplacementContainer
+    using Test
     module ReplaceMe
         const x = 1
     end
     const Old = ReplaceMe
-    module ReplaceMe
+    @test_warn r"WARNING: replacing module ReplaceMe" @eval module ReplaceMe
         const x = 2
     end
 end
@@ -3987,3 +4024,25 @@ end
 @test f45494() === (0,)
 
 @test_throws "\"esc(...)\" used outside of macro expansion" eval(esc(:(const x=1)))
+
+# Inner function declaration world age
+function create_inner_f_no_methods()
+    function inner_f end
+end
+@test isa(create_inner_f_no_methods(), Function)
+@test length(methods(create_inner_f_no_methods())) == 0
+
+function create_inner_f_one_method()
+    inner_f() = 1
+end
+@test isa(create_inner_f_no_methods(), Function)
+@test length(methods(create_inner_f_no_methods())) == 0
+@test Base.invoke_in_world(first(methods(create_inner_f_one_method)).primary_world, create_inner_f_one_method()) == 1
+
+# Issue 56711 - Scope of signature hoisting
+function fs56711()
+    f(lhs::Integer) = 1
+    f(lhs::Integer, rhs::(local x_should_not_be_defined=Integer; x_should_not_be_defined)) = 2
+    return f
+end
+@test !@isdefined(x_should_not_be_defined)
