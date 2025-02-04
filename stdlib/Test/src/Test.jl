@@ -42,7 +42,14 @@ const DISPLAY_FAILED = (
     :contains
 )
 
+
 const FAIL_FAST = Ref{Bool}(false)
+
+function __init__()
+    FAIL_FAST[] = Base.get_bool_env("JULIA_TEST_FAILFAST", false)
+end
+
+
 
 #-----------------------------------------------------------------------
 
@@ -1085,7 +1092,7 @@ function DefaultTestSet(desc::AbstractString; verbose::Bool = false, showtiming:
         if parent_ts isa DefaultTestSet
             failfast = parent_ts.failfast
         else
-            failfast = false
+            failfast = FAIL_FAST[]
         end
     end
     return DefaultTestSet(String(desc)::String, [], 0, false, verbose, showtiming, time(), nothing, failfast, extract_file(source), rng)
@@ -1116,7 +1123,7 @@ function record(ts::DefaultTestSet, t::Union{Fail, Error}; print_result::Bool=TE
         end
     end
     push!(ts.results, t)
-    (FAIL_FAST[] || ts.failfast) && throw(FailFastError())
+    ts.failfast && throw(FailFastError())
     return t
 end
 
@@ -1648,8 +1655,6 @@ macro testset(args...)
         error("Expected function call, begin/end block or for loop as argument to @testset")
     end
 
-    FAIL_FAST[] = Base.get_bool_env("JULIA_TEST_FAILFAST", false)
-
     if tests.head === :for
         return testset_forloop(args, tests, __source__)
     elseif tests.head === :let
@@ -1766,7 +1771,7 @@ function testset_beginend_call(args, tests, source)
             # error in this test set
             trigger_test_failure_break(err)
             if err isa FailFastError
-                get_testset_depth() > 1 ? rethrow() : failfast_print()
+                get_testset_depth() > 0 ? rethrow() : failfast_print()
             else
                 record(ts, Error(:nontest_error, Expr(:tuple), err, Base.current_exceptions(), $(QuoteNode(source))))
             end
