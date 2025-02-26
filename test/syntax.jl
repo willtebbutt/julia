@@ -345,6 +345,10 @@ end
 # issue #15828
 @test Meta.lower(Main, Meta.parse("x...")) == Expr(:error, "\"...\" expression outside call")
 
+# issue #57153 - malformed "..." expr
+@test Meta.lower(@__MODULE__, :(identity($(Expr(:(...), 1, 2, 3))))) ==
+    (Expr(:error, "wrong number of expressions following \"...\""))
+
 # issue #15830
 @test Meta.lower(Main, Meta.parse("foo(y = (global x)) = y")) == Expr(:error, "misplaced \"global\" declaration")
 
@@ -2454,9 +2458,7 @@ end
 @test_throws MethodError @m37134()(1.0) == 62
 
 macro n37134()
-    quote
-        ((x...,)) -> (x)
-    end |> esc
+    :($(esc(Expr(:tuple, Expr(:..., :x))))->$(esc(:x)))
 end
 @test @n37134()(2,1) === (2,1)
 
@@ -2652,10 +2654,10 @@ using ..Mod
 end
 @test Mod3.f(10) == 21
 @test !isdefined(Mod3, :func)
-@test_throws ErrorException("invalid method definition in Mod3: function Mod3.f must be explicitly imported to be extended") Core.eval(Mod3, :(f(x::Int) = x))
+@test_throws ErrorException("invalid method definition in Mod3: function Mod.f must be explicitly imported to be extended") Core.eval(Mod3, :(f(x::Int) = x))
 @test !isdefined(Mod3, :always_undef) # resolve this binding now in Mod3
-@test_throws ErrorException("invalid method definition in Mod3: exported function Mod.always_undef does not exist") Core.eval(Mod3, :(always_undef(x::Int) = x))
-@test_throws ErrorException("cannot declare Mod3.always_undef constant; it was already declared as an import") Core.eval(Mod3, :(const always_undef = 3))
+@test Core.eval(Mod3, :(always_undef(x::Int) = x)) == invokelatest(getglobal, Mod3, :always_undef)
+@test Core.eval(Mod3, :(const always_undef = 3)) == invokelatest(getglobal, Mod3, :always_undef)
 @test_throws ErrorException("cannot declare Mod3.f constant; it was already declared as an import") Core.eval(Mod3, :(const f = 3))
 @test_throws ErrorException("cannot declare Mod.maybe_undef constant; it was already declared global") Core.eval(Mod, :(const maybe_undef = 3))
 
@@ -3979,7 +3981,7 @@ module ReplacementContainer
         const x = 1
     end
     const Old = ReplaceMe
-    @test_warn r"WARNING: replacing module ReplaceMe" @eval module ReplaceMe
+    @eval module ReplaceMe
         const x = 2
     end
 end
@@ -4046,3 +4048,65 @@ function fs56711()
     return f
 end
 @test !@isdefined(x_should_not_be_defined)
+
+# Test that importing twice is allowed without warning
+@test_nowarn @eval baremodule ImportTwice
+    import ..Base
+    using .Base: zero, zero
+end
+
+# PR# 55040 - Macrocall as function sig
+@test :(function @f()() end) == :(function (@f)() end)
+
+function callme end
+macro callmemacro(args...)
+    Expr(:call, esc(:callme), map(esc, args)...)
+end
+function @callmemacro(a::Int)
+    return 1
+end
+@callmemacro(b::Float64) = 2
+function @callmemacro(a::T, b::T) where T <: Int
+    return 3
+end
+function @callmemacro(a::Int, b::Int, c::Int)::Float64
+    return 4
+end
+function @callmemacro(d::String)
+    (a, b, c)
+    # ^ Should not be accidentally parsed as an argument list
+    return 4
+end
+
+@test callme(1) === 1
+@test callme(2.0) === 2
+@test callme(3, 3) === 3
+@test callme(4, 4, 4) === 4.0
+
+# Ambiguous 1-arg anymous vs macrosig
+@test_parseerror "function (@foo(a)) end"
+
+# #57267 - Missing `latestworld` after typealias
+abstract type A57267{S, T} end
+@test_nowarn @eval begin
+    B57267{S} = A57267{S, 1}
+    const C57267 = B57267
+end
+
+# #57404 - Binding ambiguity resolution ignores guard bindings
+module Ambig57404
+    module A
+        export S
+    end
+    using .A
+    module B
+        const S = 1
+        export S
+    end
+    using .B
+end
+@test Ambig57404.S == 1
+
+# Issue #56904 - lambda linearized twice
+@test (let; try 3; finally try 1; f(() -> x); catch x; end; end; x = 7; end) === 7
+@test (let; try 3; finally try 4; finally try 1; f(() -> x); catch x; end; end; end; x = 7; end) === 7
