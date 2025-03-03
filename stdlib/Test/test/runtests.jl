@@ -1419,7 +1419,7 @@ end
                 end
             end
             """)
-            cmd    = Cmd(`$(Base.julia_cmd()) --startup-file=no --color=no $f`, env=Dict("JULIA_TEST_FAILFAST"=>true))
+            cmd    = addenv(`$(Base.julia_cmd()) --startup-file=no --color=no $f`, "JULIA_TEST_FAILFAST"=>"true")
             result = read(pipeline(ignorestatus(cmd), stderr=devnull), String)
             @test occursin(expected, result)
         end
