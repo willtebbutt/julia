@@ -22,6 +22,9 @@ FLAGS += -Wall -Wno-strict-aliasing -fno-omit-frame-pointer -fvisibility=hidden 
 		 -Wno-comment -Wpointer-arith -Wundef
 ifeq ($(USEGCC),1) # GCC bug #25509 (void)__attribute__((warn_unused_result))
 FLAGS += -Wno-unused-result
+# GCC is throwing warnings like `warning: 'int __builtin_memcmp_eq(const void*, const void*, long unsigned int)' specified bound 18446744073709551615 exceeds maximum object size 9223372036854775807` in llvm's StringRef.h == seemingly because it doesn't realise the size can't be 0.
+FLAGS += -Wno-stringop-overflow
+FLAGS += -Wno-stringop-overread
 endif
 JCFLAGS += -Wold-style-definition -Wstrict-prototypes -Wc++-compat
 
@@ -56,7 +59,7 @@ SRCS := \
 	jltypes gf typemap smallintset ast builtins module interpreter symbol \
 	dlload sys init task array genericmemory staticdata toplevel jl_uv datatype \
 	simplevector runtime_intrinsics precompile jloptions mtarraylist \
-	threading scheduler stackwalk \
+	threading scheduler stackwalk null_sysimage \
 	method jlapi signal-handling safepoint timing subtype rtutils \
 	crc32c APInt-C processor ircode opaque_closure codegen-stubs coverage runtime_ccall engine \
 	$(GC_SRCS)
@@ -74,8 +77,7 @@ else
 GC_CODEGEN_SRCS += llvm-late-gc-lowering-stock
 endif
 CODEGEN_SRCS := codegen jitlayers aotcompile debuginfo disasm llvm-simdloop \
-	llvm-pass-helpers llvm-ptls \
-	llvm-propagate-addrspaces \
+	llvm-pass-helpers llvm-ptls llvm-propagate-addrspaces null_sysimage \
 	llvm-multiversioning llvm-alloc-opt llvm-alloc-helpers cgmemmgr llvm-remove-addrspaces \
 	llvm-remove-ni llvm-julia-licm llvm-demote-float16 llvm-cpufeatures pipeline llvm_api \
 	$(GC_CODEGEN_SRCS)
@@ -184,7 +186,7 @@ endif
 CLANG_LDFLAGS := $(LLVM_LDFLAGS)
 ifeq ($(OS), Darwin)
 CLANG_LDFLAGS += -Wl,-undefined,dynamic_lookup
-OSLIBS += -Wl,-U,__dyld_atfork_parent -Wl,-U,__dyld_atfork_prepare -Wl,-U,__dyld_dlopen_atfork_parent -Wl,-U,__dyld_dlopen_atfork_prepare -Wl,-U,_jl_image_pointers -Wl,-U,_jl_system_image_data -Wl,-U,_jl_system_image_size
+OSLIBS += -Wl,-U,__dyld_atfork_parent -Wl,-U,__dyld_atfork_prepare -Wl,-U,__dyld_dlopen_atfork_parent -Wl,-U,__dyld_dlopen_atfork_prepare
 LIBJULIA_PATH_REL := @rpath/libjulia
 else
 LIBJULIA_PATH_REL := libjulia
