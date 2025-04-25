@@ -49,8 +49,6 @@ function __init__()
     FAIL_FAST[] = Base.get_bool_env("JULIA_TEST_FAILFAST", false)
 end
 
-
-
 #-----------------------------------------------------------------------
 
 # Backtrace utility functions
