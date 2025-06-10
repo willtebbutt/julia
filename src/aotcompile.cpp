@@ -108,20 +108,37 @@ jl_get_llvm_mis_impl(void *native_code, size_t *num_elements, jl_method_instance
     }
 }
 
+// get the list of global variables managed by the compiler
 extern "C" JL_DLLEXPORT_CODEGEN void jl_get_llvm_gvs_impl(void *native_code,
                                                           size_t *num_elements, void **data)
 {
-    // map a memory location (jl_value_t or jl_binding_t) to a GlobalVariable
     jl_native_code_desc_t *desc = (jl_native_code_desc_t *)native_code;
-    auto &value_map = desc->jl_value_to_llvm;
+    auto &gvars = desc->jl_sysimg_gvars;
 
     if (data == NULL) {
-        *num_elements = value_map.size();
+        *num_elements = gvars.size();
         return;
     }
 
-    assert(*num_elements == value_map.size());
-    memcpy(data, value_map.data(), *num_elements * sizeof(void *));
+    assert(*num_elements == gvars.size());
+    memcpy(data, gvars.data(), *num_elements * sizeof(void *));
+}
+
+// get the initializer values (jl_value_t or jl_binding_t ptr) of managed global variables
+extern "C" JL_DLLEXPORT_CODEGEN void jl_get_llvm_gv_inits_impl(void *native_code,
+                                                               size_t *num_elements,
+                                                               void **data)
+{
+    jl_native_code_desc_t *desc = (jl_native_code_desc_t *)native_code;
+    auto &inits = desc->jl_value_to_llvm;
+
+    if (data == NULL) {
+        *num_elements = inits.size();
+        return;
+    }
+
+    assert(*num_elements == inits.size());
+    memcpy(data, inits.data(), *num_elements * sizeof(void *));
 }
 
 extern "C" JL_DLLEXPORT_CODEGEN void jl_get_llvm_external_fns_impl(void *native_code,
@@ -559,7 +576,7 @@ static void generate_cfunc_thunks(jl_codegen_params_t &params, jl_compiled_funct
     }
     size_t latestworld = jl_atomic_load_acquire(&jl_world_counter);
     for (cfunc_decl_t &cfunc : params.cfuncs) {
-        Module *M = cfunc.theFptr->getParent();
+        Module *M = cfunc.cfuncdata->getParent();
         jl_value_t *sigt = cfunc.sigt;
         JL_GC_PROMISE_ROOTED(sigt);
         jl_value_t *declrt = cfunc.declrt;
@@ -568,19 +585,20 @@ static void generate_cfunc_thunks(jl_codegen_params_t &params, jl_compiled_funct
         jl_code_instance_t *codeinst = nullptr;
         auto assign_fptr = [&params, &cfunc, &codeinst, &unspec](Function *f) {
             ConstantArray *init = cast<ConstantArray>(cfunc.cfuncdata->getInitializer());
-            SmallVector<Constant*,6> initvals;
+            SmallVector<Constant*,8> initvals;
             for (unsigned i = 0; i < init->getNumOperands(); ++i)
                 initvals.push_back(init->getOperand(i));
-            assert(initvals.size() == 6);
+            assert(initvals.size() == 8);
             assert(initvals[0]->isNullValue());
+            assert(initvals[2]->isNullValue());
             if (codeinst) {
                 Constant *llvmcodeinst = literal_pointer_val_slot(params, f->getParent(), (jl_value_t*)codeinst);
-                initvals[0] = llvmcodeinst; // plast_codeinst
+                initvals[2] = llvmcodeinst; // plast_codeinst
             }
-            assert(initvals[2]->isNullValue());
-            initvals[2] = unspec;
+            assert(initvals[4]->isNullValue());
+            initvals[4] = unspec;
+            initvals[0] = f;
             cfunc.cfuncdata->setInitializer(ConstantArray::get(init->getType(), initvals));
-            cfunc.theFptr->setInitializer(f);
         };
         Module *defM = nullptr;
         StringRef func;
@@ -824,6 +842,7 @@ void *jl_emit_native_impl(jl_array_t *codeinfos, LLVMOrcThreadSafeModuleRef llvm
     generate_cfunc_thunks(params, compiled_functions);
     aot_optimize_roots(params, method_roots, compiled_functions);
     params.temporary_roots = nullptr;
+    params.temporary_roots_set.clear();
     JL_GC_POP();
 
     // process the globals array, before jl_merge_module destroys them
