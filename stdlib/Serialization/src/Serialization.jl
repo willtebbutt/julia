@@ -8,7 +8,6 @@ Provide serialization of Julia objects via the functions
 module Serialization
 
 import Base: Bottom, unsafe_convert
-import Base.ScopedValues: ScopedValue, with
 import Core: svec, SimpleVector
 using Base: unaliascopy, unwrap_unionall, require_one_based_indexing, ntupleany
 using Core.IR
@@ -24,12 +23,24 @@ mutable struct Serializer{I<:IO} <: AbstractSerializer
     pending_refs::Vector{Int}
     known_object_data::Dict{UInt64,Any}
     version::Int
-    Serializer{I}(io::I) where I<:IO = new(io, 0, IdDict(), Int[], Dict{UInt64,Any}(), ser_version)
+    current_module::Union{Nothing,Module}
+    Serializer{I}(io::I) where I<:IO = new(io, 0, IdDict(), Int[], Dict{UInt64,Any}(), ser_version, nothing)
 end
 
 Serializer(io::IO) = Serializer{typeof(io)}(io)
 
-const current_module = ScopedValue{Union{Nothing,Module}}(nothing)
+macro withmodule(s, m, code)
+    s, m, code = esc(s), esc(m), esc(code)
+    quote
+        _prev = ($s).current_module
+        ($s).current_module = $m
+        try
+            $code
+        finally
+            ($s).current_module = _prev
+        end
+    end
+end
 
 ## serializing values ##
 
@@ -1068,7 +1079,7 @@ function deserialize(s::AbstractSerializer, ::Type{Method})
     constprop = 0x00
     purity = 0x0000
     local template_or_is_opaque, template
-    with(current_module => mod) do
+    @withmodule s mod begin
         template_or_is_opaque = deserialize(s)
     end
     if isa(template_or_is_opaque, Bool)
@@ -1084,7 +1095,7 @@ function deserialize(s::AbstractSerializer, ::Type{Method})
         elseif format_version(s) >= 17
             purity = UInt16(deserialize(s)::UInt8)
         end
-        with(current_module => mod) do
+        @withmodule s mod begin
             template = deserialize(s)
         end
     else
@@ -1224,8 +1235,8 @@ function deserialize(s::AbstractSerializer, ::Type{CodeInfo})
             end
         end
     end
-    if current_module[] !== nothing
-        map!(x->symbol_to_globalref(x, current_module[]), code)
+    if s.current_module !== nothing
+        map!(x->symbol_to_globalref(x, s.current_module), code)
     end
     _x = deserialize(s)
     have_debuginfo = _x isa Core.DebugInfo
